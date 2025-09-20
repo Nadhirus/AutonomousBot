@@ -1,75 +1,115 @@
-#include <Arduino.h>
 #include <Arduino_FreeRTOS.h>
 #include <semphr.h>
-#include <task.h>
-#include "robot.h"
+#include <Wire.h>
+#include <Zumo32U4.h>
+#include "robot.h"  
 
-// Shared state (pose)
-static Pose_t currentPose;
-static SemaphoreHandle_t poseMutex; // protects currentPose
+#define MAX_SPEED 150
 
-// Task: handles low-level control loop (diffdrive + odometry)
-void TaskControl(void *pvParameters) {
-    (void)pvParameters;
+Zumo32U4Motors motors;
+Zumo32U4ButtonA buttonA;
 
-    unsigned long lastUpdate = millis();
+volatile float v_lin = 0.0f;
+volatile float v_rot = 0.0f;
 
-    for (;;) {
-        unsigned long now = millis();
-        float dt = (now - lastUpdate) / 1000.0f;
-        if (dt <= 0) dt = 0.001f;
-        lastUpdate = now;
+SemaphoreHandle_t velMutex;
 
-        // Command example: 0.1 m/s forward, 0 rad/s rotation
-        diffdrive_set_velocity(0.1f, 0.0f);
-        diffdrive_update(dt);
+const TickType_t updatePeriodTicks = pdMS_TO_TICKS(20); // 50 Hz update
 
-        // Update odometry
-        odometry_update();
 
-        // Copy odometry pose into shared state safely
-        Pose_t p = odometry_get_pose();
-        xSemaphoreTake(poseMutex, portMAX_DELAY);
-        currentPose = p;
-        xSemaphoreGive(poseMutex);
+void vTaskSetVelocity(void *pvParameters);
+void vTaskDiffDriveUpdate(void *pvParameters);
+void vTaskDummyDrive(void *pvParameters);
 
-        vTaskDelay(pdMS_TO_TICKS(10)); // run at 100 Hz
+void setup()
+{
+  buttonA.waitForButton();
+  (void)ledGreen(1);
+
+  diffdrive_init();
+
+  velMutex = xSemaphoreCreateMutex();
+
+  xTaskCreate(vTaskSetVelocity, "SetVel", 128, NULL, 2, NULL);
+  xTaskCreate(vTaskDiffDriveUpdate, "DiffUpdate", 256, NULL, 3, NULL);
+  xTaskCreate(vTaskDummyDrive, "DummyDrive", 128, NULL, 1, NULL);
+
+
+  vTaskStartScheduler();
+}
+
+void loop()
+{
+}
+
+void vTaskSetVelocity(void *pvParameters)
+{
+  (void) pvParameters;
+  float local_vlin = 0.2f;  // m/s
+  float local_vrot = 0.0f;  // rad/s
+
+  for(;;)
+  {
+    // lock the mutex before changing shared variables
+    if (xSemaphoreTake(velMutex, portMAX_DELAY) == pdTRUE)
+    {
+      v_lin = local_vlin;
+      v_rot = local_vrot;
+      xSemaphoreGive(velMutex);
     }
+
+    // Push to diffdrive (thread-safe way)
+    diffdrive_set_velocity(local_vlin, local_vrot);
+
+    // Change velocities every 5 seconds
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    local_vlin = -local_vlin; // reverse direction
+  }
 }
 
-// Task: high-level logic (reads pose safely)
-void TaskLogic(void *pvParameters) {
-    (void)pvParameters;
+/*Constantly run PID update with diffdrive_update() */
+void vTaskDiffDriveUpdate(void *pvParameters)
+{
+  (void) pvParameters;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
 
-    for (;;) {
-        Pose_t p;
+  for(;;)
+  {
+    vTaskDelayUntil(&xLastWakeTime, updatePeriodTicks);
 
-        // safely read pose
-        xSemaphoreTake(poseMutex, portMAX_DELAY);
-        p = currentPose;
-        xSemaphoreGive(poseMutex);
+    float dt = (float)updatePeriodTicks / 1000.0f; // seconds
 
-        // Example: use p.x, p.y, p.theta for decision making
-        // e.g., wall follower, mapping, etc.
+    diffdrive_update(dt);
+  }
+}
 
-        vTaskDelay(pdMS_TO_TICKS(50)); // run at 20 Hz
+
+void vTaskDummyDrive(void *pvParameters)
+{
+    (void) pvParameters;
+
+    const TickType_t stepDelay = pdMS_TO_TICKS(2000); // 2 seconds per motion
+
+    // velocities in m/s and rad/s
+    const float speed_lin = 0.5f;
+    const float speed_rot = 10.0f; // rad/s
+
+    for (;;)
+    {
+        // Move forward
+        diffdrive_set_velocity(speed_lin, 0.0f);
+        vTaskDelay(stepDelay);
+
+        // Move backward
+        diffdrive_set_velocity(-speed_lin, 0.0f);
+        vTaskDelay(stepDelay);
+
+        // Turn left in place
+        diffdrive_set_velocity(0.0f, speed_rot);
+        vTaskDelay(stepDelay);
+
+        // Turn right in place
+        diffdrive_set_velocity(0.0f, -speed_rot);
+        vTaskDelay(stepDelay);
     }
-}
-
-void setup() {
-    robot_init();
-
-    // Create mutex for pose
-    poseMutex = xSemaphoreCreateMutex();
-
-    // Create tasks
-    xTaskCreate(TaskControl, "Ctrl", 256, NULL, 3, NULL);
-    xTaskCreate(TaskLogic, "Logic", 256, NULL, 2, NULL);
-
-    // Start scheduler
-    vTaskStartScheduler();
-}
-
-void loop() {
-    // never called in FreeRTOS
 }

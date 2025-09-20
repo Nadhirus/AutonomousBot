@@ -1,0 +1,13 @@
+{
+  "name": "robot",
+  "version": "1.0.0",
+  "dependencies": [
+    "Zumo32U4",
+    "Wire",
+    "diffdrive",
+    "odometry",
+    "pid",
+    "occupancy_grid",
+    "wallfollower"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "robot",
+  "version": "1.0.0",
+  "dependencies": [
+    "Wire",
+    "diffdrive",
+    "odometry"
+  ]
+}

@@ -1,9 +1,11 @@
 #ifndef ROBOT_H
 #define ROBOT_H
-
+   
 #include <Arduino.h>
 #include <Wire.h>
-#include <Zumo32U4.h>   
+#include <Zumo32U4.h>
+#include "../diffdrive/diffdrive.h"  // relative include
+#include "../odometry/odometry.h"
 
 
 // Pololu hardware objects
