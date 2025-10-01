@@ -20,10 +20,10 @@ char report[120];
 const TickType_t updatePeriodTicks = pdMS_TO_TICKS(20);
 
 // Different task functions
-void vTaskDiffDriveUpdate(void *pvParameters);
-void vTaskDummyDrive(void *pvParameters);
-void vTaskDisplayOdometry(void *pvParameters);
-void vTaskIMUSerial(void *pvParameters);
+void vTaskDriveMotors(void *pvParameters);
+void vTaskNavigation(void *pvParameters);
+void vTaskDisplay(void *pvParameters);
+void vTaskOdometry(void *pvParameters);
 
 void setup()
 {
@@ -51,10 +51,10 @@ void setup()
 
     velMutex = xSemaphoreCreateMutex();
 
-    xTaskCreate(vTaskDiffDriveUpdate, "DiffUpdate", 192, NULL, 2, NULL); //192
-    xTaskCreate(vTaskDummyDrive,       "DummyDrive", 128, NULL, 1, NULL);
-    xTaskCreate(vTaskDisplayOdometry,  "DisplayOdo", 128, NULL, 1, NULL); //192
-    xTaskCreate(vTaskIMUSerial,        "IMUSerial", 384, NULL, 3, NULL);
+    xTaskCreate(vTaskDriveMotors, "DriveMotors", 192, NULL, 3, NULL); // 192
+    xTaskCreate(vTaskNavigation, "Navigation", 128, NULL, 1, NULL);
+    xTaskCreate(vTaskOdometry, "Odometry", 384, NULL, 2, NULL); 
+    xTaskCreate(vTaskDisplay, "Display", 128, NULL, 1, NULL); 
 
     vTaskStartScheduler();
 }
@@ -63,7 +63,7 @@ void loop()
 {
 }
 
-void vTaskDiffDriveUpdate(void *pvParameters)
+void vTaskDriveMotors(void *pvParameters)
 {
     (void)pvParameters;
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -76,7 +76,7 @@ void vTaskDiffDriveUpdate(void *pvParameters)
     }
 }
 
-void vTaskDummyDrive(void *pvParameters)
+void vTaskNavigation(void *pvParameters)
 {
     (void)pvParameters;
     const TickType_t stepDelay = pdMS_TO_TICKS(2000);
@@ -99,51 +99,66 @@ void vTaskDummyDrive(void *pvParameters)
     }
 }
 
-void vTaskDisplayOdometry(void *pvParameters)
+void vTaskDisplay(void *pvParameters)
 {
     (void)pvParameters;
-    const TickType_t displayRate = pdMS_TO_TICKS(200);
+    const TickType_t displayRate = pdMS_TO_TICKS(200); // 5 Hz
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    int last_x = 0x7FFF, last_y = 0x7FFF, last_theta = 0x7FFF;
 
     for (;;)
     {
-        odometry_update();
         Pose_t pose = odometry_get_pose();
+
+        // Convert to cm
         int x_cm = (int)(pose.x * 100.0f);
         int y_cm = (int)(pose.y * 100.0f);
+
+        // Convert theta to degrees and wrap to [-180, +180]
         int theta_deg = (int)(pose.theta * 180.0f / 3.14159f);
+        while (theta_deg > 180) theta_deg -= 360;
+        while (theta_deg < -180) theta_deg += 360;
 
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("(");
-        lcd.print(x_cm);
-        lcd.print(",");
-        lcd.print(y_cm);
-        lcd.print(")");
+        // Update position only if changed
+        if (x_cm != last_x || y_cm != last_y)
+        {
+            lcd.setCursor(0, 0);
+            lcd.print("(");
+            lcd.print(x_cm);
+            lcd.print(",");
+            lcd.print(y_cm);
+            lcd.print(")   "); // trailing spaces to clear old digits
+            last_x = x_cm;
+            last_y = y_cm;
+        }
 
-        lcd.setCursor(0, 1);
-        lcd.print(theta_deg);
-        lcd.print((char)223);
+        // Update heading only if changed
+        if (theta_deg != last_theta)
+        {
+            lcd.setCursor(0, 1);
+            lcd.print("      ");        // clear old value
+            lcd.setCursor(0, 1);
+            lcd.print(theta_deg);
+            lcd.print((char)223);       // degree symbol
+            last_theta = theta_deg;
+        }
 
-        vTaskDelay(displayRate);
+        vTaskDelayUntil(&xLastWakeTime, displayRate);
     }
 }
 
-void vTaskIMUSerial(void *pvParameters)
+void vTaskOdometry(void *pvParameters)
 {
     (void)pvParameters;
+    const TickType_t odomRate = pdMS_TO_TICKS(50); // 50 Hz kaman filtering
+    TickType_t xLastWakeTime = xTaskGetTickCount();
 
     for (;;)
     {
         imu.read();
+        odometry_update();
 
-        snprintf_P(report, sizeof(report),
-                   PSTR("A: %6d %6d %6d    M: %6d %6d %6d    G: %6d %6d %6d"),
-                   imu.a.x, imu.a.y, imu.a.z,
-                   imu.m.x, imu.m.y, imu.m.z,
-                   imu.g.x, imu.g.y, imu.g.z);
-
-        Serial.println(report);
-
-        vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz
+        vTaskDelayUntil(&xLastWakeTime, odomRate);
     }
 }
